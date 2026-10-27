@@ -1,0 +1,499 @@
+// BritSpeak AI — PostgreSQL schema.
+// All timestamps are stored in UTC (timestamptz). Raw audio is never stored.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  LEARNER
+  ADMIN
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+enum ProficiencyLevel {
+  BEGINNER
+  ELEMENTARY
+  INTERMEDIATE
+  UPPER_INTERMEDIATE
+  ADVANCED
+}
+
+enum ExplanationLanguage {
+  ENGLISH
+  URDU
+}
+
+enum LearningMode {
+  FREE_CONVERSATION
+  GUIDED_LESSON
+  CLIENT_COMMUNICATION
+  PRONUNCIATION_LAB
+  REPEAT_AFTER_ME
+  ROLE_PLAY
+  DAILY_CHALLENGE
+  REVIEW_MISTAKES
+  BASELINE_ASSESSMENT
+}
+
+enum PublicationStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SessionStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ABANDONED
+}
+
+enum Speaker {
+  LEARNER
+  TUTOR
+}
+
+enum InputMode {
+  VOICE
+  TEXT
+}
+
+enum AssessmentStatus {
+  NOT_REQUESTED
+  PENDING
+  COMPLETED
+  UNAVAILABLE
+  FAILED
+}
+
+enum ErrorCategory {
+  GRAMMAR
+  VERB_TENSE
+  SUBJECT_VERB_AGREEMENT
+  ARTICLES_PREPOSITIONS
+  WORD_CHOICE
+  WORD_ORDER
+  NATURALNESS
+  BRITISH_USAGE
+  PRONUNCIATION
+  RECOGNITION_UNCERTAINTY
+}
+
+enum CorrectionKind {
+  ERROR
+  SUGGESTION
+}
+
+enum PracticeTargetType {
+  GRAMMAR
+  VOCABULARY
+  PRONUNCIATION
+  SENTENCE
+}
+
+enum MasteryStatus {
+  NEW
+  LEARNING
+  REVIEWING
+  MASTERED
+}
+
+enum Plan {
+  FREE
+  PRO
+  PREMIUM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  UNPAID
+  CANCELED
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  PAUSED
+}
+
+enum UsageOperation {
+  STT
+  TTS
+  PRONUNCIATION
+  LLM
+  REALTIME
+}
+
+// ─── Identity ────────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  displayName     String
+  role            Role      @default(LEARNER)
+  emailVerifiedAt DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  profile                  LearnerProfile?
+  authSessions             AuthSession[]
+  authTokens               AuthToken[]
+  learningSessions         LearningSession[]
+  conversationTurns        ConversationTurn[]
+  pronunciationAssessments PronunciationAssessment[]
+  errorRecords             ErrorRecord[]
+  practiceItems            PracticeItem[]
+  learningProgress         LearningProgress[]
+  subscription             Subscription?
+  usageEvents              UsageEvent[]
+  auditLogs                AuditLog[]                @relation("AuditActor")
+}
+
+model AuthSession {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt  DateTime @db.Timestamptz(3)
+  lastSeenAt DateTime @default(now()) @db.Timestamptz(3)
+  userAgent  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuthToken {
+  id        String        @id @default(cuid())
+  userId    String
+  type      AuthTokenType
+  tokenHash String        @unique
+  expiresAt DateTime      @db.Timestamptz(3)
+  usedAt    DateTime?     @db.Timestamptz(3)
+  createdAt DateTime      @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+}
+
+// ─── Learner ─────────────────────────────────────────────────────────────────
+
+model LearnerProfile {
+  id                      String              @id @default(cuid())
+  userId                  String              @unique
+  proficiencyLevel        ProficiencyLevel    @default(BEGINNER)
+  // Self-selected level until the baseline runs. Never presented as a CEFR certification.
+  levelSource             String              @default("self_selected")
+  learningGoals           String[]
+  explanationLanguage     ExplanationLanguage @default(ENGLISH)
+  speechLocale            String              @default("en-GB")
+  preferredVoice          String?
+  preferredSpeakingRate   Float               @default(1.0)
+  dailyPracticeMinutes    Int                 @default(10)
+  timezone                String              @default("Europe/London")
+  onboardingCompletedAt   DateTime?           @db.Timestamptz(3)
+  baselineCompletedAt     DateTime?           @db.Timestamptz(3)
+  // Privacy preferences
+  transcriptRetentionDays Int                 @default(365)
+  modelTrainingConsent    Boolean             @default(false)
+  createdAt               DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime            @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── Curriculum ──────────────────────────────────────────────────────────────
+
+model Lesson {
+  id                 String            @id @default(cuid())
+  slug               String            @unique
+  title              String
+  description        String
+  mode               LearningMode
+  level              ProficiencyLevel
+  learningObjectives String[]
+  estimatedMinutes   Int
+  // Validated by src/server/domain/lesson-content.ts
+  content            Json
+  status             PublicationStatus @default(DRAFT)
+  sortOrder          Int               @default(0)
+  createdAt          DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime          @updatedAt @db.Timestamptz(3)
+
+  sessions LearningSession[]
+
+  @@index([status, mode, level])
+}
+
+// ─── Practice sessions ───────────────────────────────────────────────────────
+
+model LearningSession {
+  id            String        @id @default(cuid())
+  userId        String
+  lessonId      String?
+  mode          LearningMode
+  status        SessionStatus @default(ACTIVE)
+  startedAt     DateTime      @default(now()) @db.Timestamptz(3)
+  endedAt       DateTime?     @db.Timestamptz(3)
+  pausedAt      DateTime?     @db.Timestamptz(3)
+  // Seconds spent while ACTIVE (pauses excluded).
+  activeSeconds Int           @default(0)
+  lastResumedAt DateTime      @default(now()) @db.Timestamptz(3)
+  summary       Json?
+  metadata      Json          @default("{}")
+  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime      @updatedAt @db.Timestamptz(3)
+
+  user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson                   Lesson?                   @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+  turns                    ConversationTurn[]
+  pronunciationAssessments PronunciationAssessment[]
+  errorRecords             ErrorRecord[]
+
+  @@index([userId, startedAt(sort: Desc)])
+  @@index([userId, status])
+}
+
+model ConversationTurn {
+  id               String           @id @default(cuid())
+  sessionId        String
+  userId           String
+  sequence         Int
+  speaker          Speaker
+  transcript       String
+  correctedText    String?
+  inputMode        InputMode        @default(TEXT)
+  // Original recognised text before the learner edited it (null when unedited).
+  recognizedText   String?
+  sttConfidence    Float?
+  assessmentStatus AssessmentStatus @default(NOT_REQUESTED)
+  // Structured, validated correction result (see src/server/domain/corrections.ts).
+  feedback         Json?
+  createdAt        DateTime         @default(now()) @db.Timestamptz(3)
+
+  session      LearningSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  errorRecords ErrorRecord[]
+
+  @@unique([sessionId, sequence])
+  @@index([userId, createdAt])
+}
+
+model PronunciationAssessment {
+  id                String   @id @default(cuid())
+  userId            String
+  sessionId         String?
+  practiceItemId    String?
+  referenceText     String
+  recognizedText    String
+  provider          String
+  locale            String
+  attemptNumber     Int      @default(1)
+  overallScore      Float?
+  accuracyScore     Float?
+  fluencyScore      Float?
+  completenessScore Float?
+  prosodyScore      Float?
+  // Minimised, validated normalised result (no audio, no provider raw dump).
+  assessmentPayload Json
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session      LearningSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  practiceItem PracticeItem?    @relation(fields: [practiceItemId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, referenceText])
+}
+
+model ErrorRecord {
+  id              String         @id @default(cuid())
+  userId          String
+  sessionId       String?
+  turnId          String?
+  category        ErrorCategory
+  kind            CorrectionKind @default(ERROR)
+  originalText    String
+  correctedText   String
+  explanation     String
+  explanationUrdu String?
+  confidence      Float
+  // Normalised key used to detect recurring mistakes (e.g. "verb_tense:go->went").
+  patternKey      String
+  resolvedAt      DateTime?      @db.Timestamptz(3)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session       LearningSession?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  turn          ConversationTurn? @relation(fields: [turnId], references: [id], onDelete: SetNull)
+  practiceItems PracticeItem[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, patternKey])
+  @@index([userId, resolvedAt])
+}
+
+model PracticeItem {
+  id                 String             @id @default(cuid())
+  userId             String
+  targetType         PracticeTargetType
+  targetText         String
+  prompt             String?
+  explanation        String?
+  sourceErrorId      String?
+  nextReviewAt       DateTime           @db.Timestamptz(3)
+  lastReviewedAt     DateTime?          @db.Timestamptz(3)
+  // Review interval in days (SM-2 style scheduling, see src/server/domain/spaced-repetition.ts)
+  reviewIntervalDays Float              @default(0)
+  easeFactor         Float              @default(2.5)
+  repetitions        Int                @default(0)
+  lapses             Int                @default(0)
+  masteryStatus      MasteryStatus      @default(NEW)
+  createdAt          DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime           @updatedAt @db.Timestamptz(3)
+
+  user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceError              ErrorRecord?              @relation(fields: [sourceErrorId], references: [id], onDelete: SetNull)
+  pronunciationAssessments PronunciationAssessment[]
+
+  @@unique([userId, targetType, targetText])
+  @@index([userId, nextReviewAt])
+}
+
+model LearningProgress {
+  id                 String   @id @default(cuid())
+  userId             String
+  // Calendar date in the learner's timezone, stored as a date (no time component).
+  date               DateTime @db.Date
+  practiceSeconds    Int      @default(0)
+  exercisesCompleted Int      @default(0)
+  sessionsCompleted  Int      @default(0)
+  turnsSpoken        Int      @default(0)
+  progressMetrics    Json     @default("{}")
+  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+// ─── Billing and usage ───────────────────────────────────────────────────────
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  userId             String             @unique
+  billingProvider    String             @default("stripe")
+  externalCustomerId String?            @unique
+  subscriptionId     String?            @unique
+  plan               Plan               @default(FREE)
+  status             SubscriptionStatus @default(ACTIVE)
+  billingPeriod      String?
+  currentPeriodStart DateTime?          @db.Timestamptz(3)
+  currentPeriodEnd   DateTime?          @db.Timestamptz(3)
+  cancelAtPeriodEnd  Boolean            @default(false)
+  // Last provider event applied; used to ignore out-of-order webhook deliveries.
+  lastEventCreatedAt DateTime?          @db.Timestamptz(3)
+  createdAt          DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime           @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BillingWebhookEvent {
+  id          String    @id
+  provider    String
+  type        String
+  status      String
+  error       String?
+  receivedAt  DateTime  @default(now()) @db.Timestamptz(3)
+  processedAt DateTime? @db.Timestamptz(3)
+}
+
+model UsageEvent {
+  id              String         @id @default(cuid())
+  userId          String?
+  operation       UsageOperation
+  provider        String
+  model           String?
+  // Metered quantity, e.g. audio seconds, characters, tokens, assessments.
+  units           Float
+  unitType        String
+  inputTokens     Int?
+  outputTokens    Int?
+  // Estimated cost in micro-USD (null when no rate is configured).
+  costMicros      Int?
+  latencyMs       Int?
+  success         Boolean
+  failureCategory String?
+  retryCount      Int            @default(0)
+  requestId       String?
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, operation, createdAt])
+  @@index([createdAt])
+  @@index([provider, createdAt])
+}
+
+model RateLimitBucket {
+  key         String
+  windowStart DateTime @db.Timestamptz(3)
+  count       Int      @default(0)
+
+  @@id([key, windowStart])
+  @@index([windowStart])
+}
+
+// Cache for synthesised reference audio of *public lesson content only*.
+// Personalised text is never cached (see src/server/services/speech.ts).
+model SpeechCache {
+  key         String   @id
+  contentType String
+  audio       Bytes
+  sizeBytes   Int
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  lastUsedAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([lastUsedAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  targetType String
+  targetId   String?
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId])
+}
+
+model ContactMessage {
+  id        String    @id @default(cuid())
+  name      String
+  email     String
+  topic     String
+  message   String
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  handledAt DateTime? @db.Timestamptz(3)
+}

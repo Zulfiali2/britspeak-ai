@@ -1,0 +1,44 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# testing
+/coverage
+/playwright-report
+/test-results
+/blob-report
+/playwright/.cache
+
+# next.js
+/.next/
+/out/
+/build
+next-env.d.ts
+*.tsbuildinfo
+
+# environment and secrets — only .env.example is committed
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+
+# data that must never be committed
+*.dump
+*.sql.gz
+/backups
+/recordings
+*.webm
+*.m4a
+# generated audio fixtures are rebuilt by tests; keep committed fixtures explicit
+/tests/fixtures/generated
+
+# misc
+.DS_Store
+npm-debug.log*
+.vercel
